@@ -1,0 +1,16 @@
+# Системные файлы macOS и IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Собранные артефакты и архивы
+output/
+*.tar.gz
+src/frontend/dist/
+src/frontend/node_modules/
+src/backend/sandbox-backend
+src/backend/app
+
+# Секреты и переменные окружения (оставляем только примеры *.examples)
+scripts/nexus.env
+*.env
