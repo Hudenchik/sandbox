@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: src/backend/Dockerfile
+    image: sandbox-backend
+    container_name: my-backend
+    ports:
+      - "8081:8081"
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: src/frontend/Dockerfile
+    image: sandbox-frontend
+    container_name: my-frontend
+    ports:
+      - "8888:8888"
+    networks:
+      - app-network
+    restart: unless-stopped
+
+# Объявляем общую сеть для проекта
+networks:
+  app-network:
+
