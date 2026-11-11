@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 set -a
-source scripts/nexus.env
+source .env
 set +a
 
 VERSION="${1:-${VERSION:-$(cat output/.last-version)}}"

@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
+cd "$(dirname "$0")/../.."
 
-IMAGE_NAME="sandbox-backend"
-TAG="latest"
+set -a
+source .env
+set +a
 
-echo "=== Сборка Docker-образа для бэкенда ==="
-docker build -t "${IMAGE_NAME}:${TAG}" -f src/backend/Dockerfile .
+REGISTRY="${NEXUS_REPO_URL#http://}"
+IMAGE="${REGISTRY}/${NEXUS_REPO_BACKEND_DOCKER}/sandbox-backend:latest"
 
-echo "=== Образ ${IMAGE_NAME}:${TAG} успешно собран! ==="
+
+echo "$NEXUS_REPO_PASS" | docker login "$REGISTRY" -u "$NEXUS_REPO_USER" --password-stdin
+docker build --platform linux/amd64 -t "$IMAGE" -f src/backend/Dockerfile .
+docker push "$IMAGE"
