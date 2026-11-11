@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Подгружаем конфигурацию Nexus
-source ./nexus.env
+set -a
+source .env
+set +a
 
 VERSION="${1:-${VERSION}}"
 SYSTEMD_SERVICE_NAME="sandbox-frontend.service"

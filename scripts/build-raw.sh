@@ -12,14 +12,14 @@ mkdir -p output/backend output/frontend
 DOCKER_BUILDKIT=1 docker buildx build \
   --platform linux/amd64 \
   --provenance=false \
-  -f build/backend.Dockerfile \
+  -f src/backend/Dockerfile \
   --target artifact \
   --output "type=local,dest=output/backend" \
   .
 
 DOCKER_BUILDKIT=1 docker buildx build \
   --provenance=false \
-  -f build/frontend.Dockerfile \
+  -f src/frontend/Dockerfile \
   --target artifact \
   --output "type=local,dest=output/frontend" \
   .
