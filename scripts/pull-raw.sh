@@ -4,21 +4,23 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 set -a
-source scripts/nexus.env
+source .env
 set +a
 
 VERSION="${1:-${VERSION:-$(cat output/.last-version)}}"
-echo "==> Загрузка в Nexus версии: ${VERSION}"
+echo "==> Скачивание из Nexus версии: ${VERSION}"
+
+mkdir -p output
 
 BACKEND_FILE="sandbox-backend-${VERSION}.tar.gz"
 FRONTEND_FILE="sandbox-frontend-${VERSION}.tar.gz"
 
 curl -f -u "${NEXUS_REPO_USER}:${NEXUS_REPO_PASS}" \
-  --upload-file "output/${BACKEND_FILE}" \
+  -o "output/${BACKEND_FILE}" \
   "${NEXUS_REPO_URL}/repository/${NEXUS_REPO_BACKEND_NAME}/${VERSION}/${BACKEND_FILE}"
 
 curl -f -u "${NEXUS_REPO_USER}:${NEXUS_REPO_PASS}" \
-  --upload-file "output/${FRONTEND_FILE}" \
+  -o "output/${FRONTEND_FILE}" \
   "${NEXUS_REPO_URL}/repository/${NEXUS_REPO_FRONTEND_NAME}/${VERSION}/${FRONTEND_FILE}"
 
-echo "==> Артефакты версии ${VERSION} успешно загружены в Nexus"
+echo "==> Артефакты скачаны в output/${BACKEND_FILE} и output/${FRONTEND_FILE}"
