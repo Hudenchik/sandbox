@@ -1,6 +1,6 @@
 services:
   backend:
-    image: 93.77.164.9:8081/sultanov-backend-docker/sandbox-backend:latest
+    image: ${IMAGE_REGISTRY}/${BACKEND_REPO}:${IMAGE_TAG}
     container_name: my-backend
     pull_policy: always
     restart: always
@@ -12,7 +12,7 @@ services:
       - app-network
 
   frontend:
-    image: 93.77.164.9:8081/sultanov-frontend-docker/sandbox-frontend:latest
+    image: ${IMAGE_REGISTRY}/${FRONTEND_REPO}:${IMAGE_TAG}
     container_name: my-frontend
     pull_policy: always
     restart: always

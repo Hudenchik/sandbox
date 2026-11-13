@@ -139,6 +139,19 @@ jobs:
           scp -q -i ~/.ssh/id_ed25519_ci docker-compose.yml "$VM:~/sandbox/docker-compose.yml"
           scp -q -i ~/.ssh/id_ed25519_ci "$RUNNER_TEMP/deploy.env" "$VM:~/sandbox/.env"
 
+      - name: Ensure insecure registry on VM
+        if: env.REGISTRY_KIND == 'nexus'
+        env:
+          VM: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519_ci "$VM" "
+            if ! docker info 2>/dev/null | grep -q '$IMAGE_REGISTRY'; then
+              echo '{\"insecure-registries\":[\"'$IMAGE_REGISTRY'\"]}' | sudo -n tee /etc/docker/daemon.json >/dev/null
+              sudo -n systemctl restart docker
+            fi
+            docker info | grep -A2 'Insecure Registries'
+          "
+
       - name: Login, pull, up, prune
         env:
           VM: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
