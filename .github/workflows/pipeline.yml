@@ -2,6 +2,9 @@ name: sandbox-ci-cd
 
 on:
   push:
+    branches-ignore: [main]       # пуш в lab3 -> только сборка и пуш образов
+  pull_request:
+    types: [opened, synchronize, reopened, closed]      # закрытие PR; деплой только если merged == true
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -25,6 +28,7 @@ permissions:
 jobs:
   version:
     name: Version
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
@@ -37,11 +41,57 @@ jobs:
           V="${INPUT_VERSION:-$(date -u +%Y%m%d-%H%M%S)}"
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "VERSION=$V"
+  test:
+    name: Test backend
+    needs: version
+    if: github.event_name != 'workflow_dispatch' || inputs.VERSION == ''
+    runs-on: ubuntu-latest
+    concurrency:
+      group: test-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build builder stage
+        run: |
+          docker build --target builder \
+            -f src/backend/Dockerfile \
+            -t sandbox-backend-builder:ci .
+
+      - name: Run tests
+        run: |
+          mkdir -p reports
+          docker run --rm -v "$PWD/reports:/reports" sandbox-backend-builder:ci sh -c '
+            set -e
+            go install github.com/jstemmer/go-junit-report/v2@v2.1.0
+            set +e
+            CGO_ENABLED=0 go test -v -coverprofile=/reports/coverage.out ./... > /reports/test.log 2>&1
+            rc=$?
+            set -e
+            "$(go env GOPATH)/bin/go-junit-report" < /reports/test.log > /reports/junit.xml
+            [ -f /reports/coverage.out ] && go tool cover -func=/reports/coverage.out > /reports/coverage.txt || true
+            exit $rc
+          '
+          cat reports/coverage.txt || true
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-reports
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 7
+
 
   build-and-push:
     name: Build and push (Nexus + ghcr.io)
-    needs: version
-    if: github.event_name == 'push' || inputs.VERSION == ''
+    needs: [version, test]
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true) ||
+      (github.event_name == 'workflow_dispatch' && inputs.VERSION == '')
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -88,69 +138,72 @@ jobs:
             -t "$N:$VERSION" -t "$N:latest" -t "$G:$VERSION" -t "$G:latest" .
           for i in "$N:$VERSION" "$N:latest" "$G:$VERSION" "$G:latest"; do docker push "$i"; done
 
-    deploy:
-      name: Deploy (docker compose over ssh)
-      needs: [version, build-and-push]
-      if: |
-        !cancelled() && !failure()
-      runs-on: ubuntu-latest
-      concurrency:
-        group: deploy-production
-        cancel-in-progress: false
-      env:
-        VERSION: ${{ needs.version.outputs.version }}
-        REGISTRY_KIND: ${{ inputs.REGISTRY_KIND || 'nexus' }}
-      steps:
-        - uses: actions/checkout@v4
+  deploy:
+    name: Deploy (docker compose over ssh)
+    needs: [version,test, build-and-push]
+    if: |
+      !cancelled() && !failure() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' && github.event.pull_request.merged == true))
 
-        - name: SSH key
-          env:
-            SSH_KEY: ${{ secrets.VM_SSH_KEY }}
-            KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
-          run: |
-            mkdir -p ~/.ssh && chmod 700 ~/.ssh
-            printf '%s\n' "$SSH_KEY"     > ~/.ssh/id_ed25519_ci && chmod 600 ~/.ssh/id_ed25519_ci
-            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      REGISTRY_KIND: ${{ inputs.REGISTRY_KIND || 'nexus' }}
+    steps:
+      - uses: actions/checkout@v4
 
-        - name: .env + files to VM
-          env:
-            VM: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
-            NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
-            NEXUS_USER: ${{ secrets.NEXUS_REPO_USER }}
-            APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
-          run: |
-            OWNER="$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
-            if [ "$REGISTRY_KIND" = "ghcr" ]; then
-              IMAGE_REGISTRY=ghcr.io
-              BACKEND_REPO="$OWNER/sandbox-backend"
-              FRONTEND_REPO="$OWNER/sandbox-frontend"
-              REGISTRY_USER="$GITHUB_ACTOR"
-            else
-              IMAGE_REGISTRY="${NEXUS_HOST#http://}"; IMAGE_REGISTRY="${IMAGE_REGISTRY#https://}"; IMAGE_REGISTRY="${IMAGE_REGISTRY%/}"
-              case "$IMAGE_REGISTRY" in *:*) ;; *) IMAGE_REGISTRY="$IMAGE_REGISTRY:8081" ;; esac
-              BACKEND_REPO=sultanov-backend-docker/sandbox-backend
-              FRONTEND_REPO=sultanov-frontend-docker/sandbox-frontend
-              REGISTRY_USER="$NEXUS_USER"
-            fi
-            {
-              printf '%s\n' "$APP_ENV_FILE"
-              echo "IMAGE_REGISTRY=$IMAGE_REGISTRY"
-              echo "IMAGE_TAG=$VERSION"
-              echo "VERSION=$VERSION"
-              echo "BACKEND_REPO=$BACKEND_REPO"
-              echo "FRONTEND_REPO=$FRONTEND_REPO"
-              echo "REGISTRY_USER=$REGISTRY_USER"
-            } > "$RUNNER_TEMP/deploy.env"
-            ssh -i ~/.ssh/id_ed25519_ci "$VM" 'mkdir -p ~/sandbox'
-            scp -q -i ~/.ssh/id_ed25519_ci docker-compose.yml deploy.sh "$VM:~/sandbox/"
-            scp -q -i ~/.ssh/id_ed25519_ci "$RUNNER_TEMP/deploy.env" "$VM:~/sandbox/.env"
+      - name: SSH key
+        env:
+          SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY"     > ~/.ssh/id_ed25519_ci && chmod 600 ~/.ssh/id_ed25519_ci
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
 
-        - name: Run deploy.sh
-          env:
-            VM: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
-            GHCR_PAT: ${{ secrets.GHCR_PAT }}
-            NEXUS_PASS: ${{ secrets.NEXUS_REPO_PASS }}
-          run: |
-            if [ "$REGISTRY_KIND" = "ghcr" ]; then PASS="$GHCR_PAT"; else PASS="$NEXUS_PASS"; fi
-            if [ -z "$PASS" ]; then echo "::error::пустой пароль для registry"; exit 1; fi
-            printf '%s\n' "$PASS" | ssh -i ~/.ssh/id_ed25519_ci "$VM" 'cd ~/sandbox && sh deploy.sh'
+      - name: .env + files to VM
+        env:
+          VM: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
+          NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
+          NEXUS_USER: ${{ secrets.NEXUS_REPO_USER }}
+          APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
+        run: |
+          OWNER="$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          if [ "$REGISTRY_KIND" = "ghcr" ]; then
+            IMAGE_REGISTRY=ghcr.io
+            BACKEND_REPO="$OWNER/sandbox-backend"
+            FRONTEND_REPO="$OWNER/sandbox-frontend"
+            REGISTRY_USER="$GITHUB_ACTOR"
+          else
+            IMAGE_REGISTRY="${NEXUS_HOST#http://}"; IMAGE_REGISTRY="${IMAGE_REGISTRY#https://}"; IMAGE_REGISTRY="${IMAGE_REGISTRY%/}"
+            case "$IMAGE_REGISTRY" in *:*) ;; *) IMAGE_REGISTRY="$IMAGE_REGISTRY:8081" ;; esac
+            BACKEND_REPO=sultanov-backend-docker/sandbox-backend
+            FRONTEND_REPO=sultanov-frontend-docker/sandbox-frontend
+            REGISTRY_USER="$NEXUS_USER"
+          fi
+          {
+            printf '%s\n' "$APP_ENV_FILE"
+            echo "IMAGE_REGISTRY=$IMAGE_REGISTRY"
+            echo "IMAGE_TAG=$VERSION"
+            echo "VERSION=$VERSION"
+            echo "BACKEND_REPO=$BACKEND_REPO"
+            echo "FRONTEND_REPO=$FRONTEND_REPO"
+            echo "REGISTRY_USER=$REGISTRY_USER"
+          } > "$RUNNER_TEMP/deploy.env"
+          ssh -i ~/.ssh/id_ed25519_ci "$VM" 'mkdir -p ~/sandbox'
+          scp -q -i ~/.ssh/id_ed25519_ci docker-compose.yml deploy.sh "$VM:~/sandbox/"
+          scp -q -i ~/.ssh/id_ed25519_ci "$RUNNER_TEMP/deploy.env" "$VM:~/sandbox/.env"
+
+      - name: Run deploy.sh
+        env:
+          VM: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
+          NEXUS_PASS: ${{ secrets.NEXUS_REPO_PASS }}
+        run: |
+          if [ "$REGISTRY_KIND" = "ghcr" ]; then PASS="$GHCR_PAT"; else PASS="$NEXUS_PASS"; fi
+          if [ -z "$PASS" ]; then echo "::error::пустой пароль для registry"; exit 1; fi
+          printf '%s\n' "$PASS" | ssh -i ~/.ssh/id_ed25519_ci "$VM" 'cd ~/sandbox && sh deploy.sh'
