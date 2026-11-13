@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/shgit
 set -eu
 
 cd "$(dirname "$0")"
