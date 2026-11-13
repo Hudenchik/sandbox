@@ -2,7 +2,7 @@ name: sandbox-ci-cd
 
 on:
   push:
-    branches: [main]
+    branches: [main, lab3]
   workflow_dispatch:
     inputs:
       VERSION:
