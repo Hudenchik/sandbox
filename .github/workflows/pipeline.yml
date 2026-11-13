@@ -2,7 +2,7 @@ name: sandbox-ci-cd
 
 on:
   push:
-    branches: [main, lab3]
+    branches: [main]
   workflow_dispatch:
     inputs:
       VERSION:
@@ -88,99 +88,69 @@ jobs:
             -t "$N:$VERSION" -t "$N:latest" -t "$G:$VERSION" -t "$G:latest" .
           for i in "$N:$VERSION" "$N:latest" "$G:$VERSION" "$G:latest"; do docker push "$i"; done
 
-  deploy:
-    name: Deploy (docker compose over ssh)
-    needs: [version, build-and-push]
-    if: |
-      !cancelled() && needs.version.result == 'success' && needs.build-and-push.result != 'failure'
-    runs-on: ubuntu-latest
-    env:
-      VERSION: ${{ needs.version.outputs.version }}
-      REGISTRY_KIND: ${{ inputs.REGISTRY_KIND || 'nexus' }}
-    steps:
-      - uses: actions/checkout@v4
+    deploy:
+      name: Deploy (docker compose over ssh)
+      needs: [version, build-and-push]
+      if: |
+        !cancelled() && !failure()
+      runs-on: ubuntu-latest
+      concurrency:
+        group: deploy-production
+        cancel-in-progress: false
+      env:
+        VERSION: ${{ needs.version.outputs.version }}
+        REGISTRY_KIND: ${{ inputs.REGISTRY_KIND || 'nexus' }}
+      steps:
+        - uses: actions/checkout@v4
 
-      - name: SSH key
-        env:
-          SSH_KEY: ${{ secrets.VM_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
-        run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY"     > ~/.ssh/id_ed25519_ci && chmod 600 ~/.ssh/id_ed25519_ci
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+        - name: SSH key
+          env:
+            SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+            KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+          run: |
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            printf '%s\n' "$SSH_KEY"     > ~/.ssh/id_ed25519_ci && chmod 600 ~/.ssh/id_ed25519_ci
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
 
-      - name: .env + compose to VM
-        env:
-          VM: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
-          NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
-          APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
-        run: |
-          OWNER="$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
-          if [ "$REGISTRY_KIND" = "ghcr" ]; then
-            IMAGE_REGISTRY=ghcr.io
-            BACKEND_REPO="$OWNER/sandbox-backend"
-            FRONTEND_REPO="$OWNER/sandbox-frontend"
-          else
-            IMAGE_REGISTRY="${NEXUS_HOST#http://}"; IMAGE_REGISTRY="${IMAGE_REGISTRY#https://}"; IMAGE_REGISTRY="${IMAGE_REGISTRY%/}"
-            case "$IMAGE_REGISTRY" in *:*) ;; *) IMAGE_REGISTRY="$IMAGE_REGISTRY:8081" ;; esac
-            BACKEND_REPO=sultanov-backend-docker/sandbox-backend
-            FRONTEND_REPO=sultanov-frontend-docker/sandbox-frontend
-          fi
-          {
-            printf '%s\n' "$APP_ENV_FILE"
-            echo "IMAGE_REGISTRY=$IMAGE_REGISTRY"
-            echo "IMAGE_TAG=$VERSION"
-            echo "VERSION=$VERSION"
-            echo "BACKEND_REPO=$BACKEND_REPO"
-            echo "FRONTEND_REPO=$FRONTEND_REPO"
-          } > "$RUNNER_TEMP/deploy.env"
-          echo "IMAGE_REGISTRY=$IMAGE_REGISTRY" >> "$GITHUB_ENV"
-          ssh -i ~/.ssh/id_ed25519_ci "$VM" 'mkdir -p ~/sandbox'
-          scp -q -i ~/.ssh/id_ed25519_ci docker-compose.yml "$VM:~/sandbox/docker-compose.yml"
-          scp -q -i ~/.ssh/id_ed25519_ci "$RUNNER_TEMP/deploy.env" "$VM:~/sandbox/.env"
-
-      - name: Ensure insecure registry on VM
-        if: env.REGISTRY_KIND == 'nexus'
-        env:
-          VM: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
-        run: |
-          ssh -i ~/.ssh/id_ed25519_ci "$VM" "
-            if ! docker info 2>/dev/null | grep -q '$IMAGE_REGISTRY'; then
-              echo '{\"insecure-registries\":[\"'$IMAGE_REGISTRY'\"]}' | sudo -n tee /etc/docker/daemon.json >/dev/null
-              sudo -n systemctl restart docker
+        - name: .env + files to VM
+          env:
+            VM: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
+            NEXUS_HOST: ${{ secrets.NEXUS_HOST }}
+            NEXUS_USER: ${{ secrets.NEXUS_REPO_USER }}
+            APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
+          run: |
+            OWNER="$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+            if [ "$REGISTRY_KIND" = "ghcr" ]; then
+              IMAGE_REGISTRY=ghcr.io
+              BACKEND_REPO="$OWNER/sandbox-backend"
+              FRONTEND_REPO="$OWNER/sandbox-frontend"
+              REGISTRY_USER="$GITHUB_ACTOR"
+            else
+              IMAGE_REGISTRY="${NEXUS_HOST#http://}"; IMAGE_REGISTRY="${IMAGE_REGISTRY#https://}"; IMAGE_REGISTRY="${IMAGE_REGISTRY%/}"
+              case "$IMAGE_REGISTRY" in *:*) ;; *) IMAGE_REGISTRY="$IMAGE_REGISTRY:8081" ;; esac
+              BACKEND_REPO=sultanov-backend-docker/sandbox-backend
+              FRONTEND_REPO=sultanov-frontend-docker/sandbox-frontend
+              REGISTRY_USER="$NEXUS_USER"
             fi
-            docker info | grep -A2 'Insecure Registries'
-          "
+            {
+              printf '%s\n' "$APP_ENV_FILE"
+              echo "IMAGE_REGISTRY=$IMAGE_REGISTRY"
+              echo "IMAGE_TAG=$VERSION"
+              echo "VERSION=$VERSION"
+              echo "BACKEND_REPO=$BACKEND_REPO"
+              echo "FRONTEND_REPO=$FRONTEND_REPO"
+              echo "REGISTRY_USER=$REGISTRY_USER"
+            } > "$RUNNER_TEMP/deploy.env"
+            ssh -i ~/.ssh/id_ed25519_ci "$VM" 'mkdir -p ~/sandbox'
+            scp -q -i ~/.ssh/id_ed25519_ci docker-compose.yml deploy.sh "$VM:~/sandbox/"
+            scp -q -i ~/.ssh/id_ed25519_ci "$RUNNER_TEMP/deploy.env" "$VM:~/sandbox/.env"
 
-      - name: Login, pull, up, prune
-        env:
-          VM: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
-          GHCR_PAT: ${{ secrets.GHCR_PAT }}
-          NEXUS_USER: ${{ secrets.NEXUS_REPO_USER }}
-          NEXUS_PASS: ${{ secrets.NEXUS_REPO_PASS }}
-        run: |
-          if [ "$REGISTRY_KIND" = "ghcr" ]; then
-            printf '%s' "$GHCR_PAT" | ssh -i ~/.ssh/id_ed25519_ci "$VM" \
-              "docker login ghcr.io -u '$GITHUB_ACTOR' --password-stdin"
-          else
-            printf '%s' "$NEXUS_PASS" | ssh -i ~/.ssh/id_ed25519_ci "$VM" \
-              "docker login '$IMAGE_REGISTRY' -u '$NEXUS_USER' --password-stdin"
-          fi
-          ssh -i ~/.ssh/id_ed25519_ci "$VM" 'cd ~/sandbox && chmod 600 .env && docker compose pull && docker compose up -d --remove-orphans --force-recreate && docker image prune -f && docker compose ps'
-
-      - name: Health check
-        env:
-          VM: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
-        run: |
-          for i in $(seq 1 10); do
-            if ssh -i ~/.ssh/id_ed25519_ci "$VM" \
-               'curl -fsS http://localhost:8081/health >/dev/null && curl -fsS -o /dev/null http://localhost:8888/'; then
-              echo "health OK"
-              exit 0
-            fi
-            echo "attempt $i/10 failed, retry in 3s"
-            sleep 3
-          done
-          echo "::error::health check failed"
-          ssh -i ~/.ssh/id_ed25519_ci "$VM" 'cd ~/sandbox && docker compose ps; docker compose logs --tail=50' || true
-          exit 1
+        - name: Run deploy.sh
+          env:
+            VM: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
+            GHCR_PAT: ${{ secrets.GHCR_PAT }}
+            NEXUS_PASS: ${{ secrets.NEXUS_REPO_PASS }}
+          run: |
+            if [ "$REGISTRY_KIND" = "ghcr" ]; then PASS="$GHCR_PAT"; else PASS="$NEXUS_PASS"; fi
+            if [ -z "$PASS" ]; then echo "::error::пустой пароль для registry"; exit 1; fi
+            printf '%s\n' "$PASS" | ssh -i ~/.ssh/id_ed25519_ci "$VM" 'cd ~/sandbox && sh deploy.sh'
