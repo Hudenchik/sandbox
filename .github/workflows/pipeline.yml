@@ -2,7 +2,7 @@ name: sandbox-ci-cd
 
 on:
   push:
-    branches-ignore: [main]       # пуш в lab3 -> только сборка и пуш образов
+    branches-ignore: [main]      
   pull_request:
     types: [opened, synchronize, reopened, closed]      # закрытие PR; деплой только если merged == true
     branches: [main]
