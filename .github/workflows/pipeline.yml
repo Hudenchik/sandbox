@@ -4,6 +4,11 @@ on:
   push:
     branches: [main, lab3]      # сузить до [main] — одной строкой
   workflow_dispatch:
+      inputs:
+        VERSION:
+          description: "Версия для повторного деплоя или отката (например, 20261111-101500). Пусто — собрать новую."
+          required: false
+          type: string
 
 permissions:
   contents: read
