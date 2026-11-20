@@ -1,0 +1,54 @@
+name: sandbox-cd
+
+on:
+  workflow_dispatch:
+    inputs:
+      VERSION:
+        description: "Версия (тег образов) для деплоя"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID }}
+  RELEASE: sandbox
+  NAMESPACE: default
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yc
+        run: |
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+          echo "$HOME/yandex-cloud/bin" >> "$GITHUB_PATH"
+
+      - name: Configure yc
+        env:
+          YC_SA_KEY: ${{ secrets.YC_SA_KEY }}
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/yc-sa-key.json"
+          printf '%s' "$YC_SA_KEY" > "$RUNNER_TEMP/yc-sa-key.json"
+
+          yc config profile create ci
+          yc config set service-account-key "$RUNNER_TEMP/yc-sa-key.json"
+          yc config set folder-id "$YC_FOLDER_ID"
+
+      - name: Configure kubectl
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          mkdir -p ~/.kube
+          printf '%s\n' "$KUBE_CONFIG" > ~/.kube/config
+          chmod 600 ~/.kube/config
+          sed -i 's/--profile=default/--profile=ci/g' ~/.kube/config
+
+      - name: Deploy
+        run: |
+          helm upgrade --install "$RELEASE" ./helm/sandbox \
+            --namespace "$NAMESPACE" \
+            --set image.tag="${{ inputs.VERSION }}"
