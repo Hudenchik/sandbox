@@ -1,30 +1,68 @@
 services:
   backend:
-    image: ${IMAGE_REGISTRY}/${BACKEND_REPO}:${IMAGE_TAG}
-    container_name: my-backend
+    platform: linux/amd64
+    # image: "${REGISTRY}${BACKEND_IMAGE}:${IMAGE_TAG:-latest}"
     pull_policy: always
-    restart: always
+    container_name: my-backend
     env_file:
       - .env
-    ports:
-      - "8081:8081"
     networks:
-      - app-network
+      - sandbox
+    expose:
+      - "8081:8081"
+    # Для сборки в ходе отладки
+    build:
+      context: .
+      dockerfile: src/backend/Dockerfile
+    healthcheck:
+      test: curl --fail -s http://localhost:8081/products
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 6
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: my-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-postgres}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - sandbox
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   frontend:
-    image: ${IMAGE_REGISTRY}/${FRONTEND_REPO}:${IMAGE_TAG}
-    container_name: my-frontend
+    platform: linux/amd64
+    image: "${REGISTRY}${FRONTEND_IMAGE}:${IMAGE_TAG:-latest}"
     pull_policy: always
-    restart: always
-    depends_on:
-      - backend
+    container_name: my-frontend
     env_file:
       - .env
-    ports:
-      - "8888:8888"
     networks:
-      - app-network
+      - sandbox 
+    ports:
+      - "8889:8888"
+    # Для автоматизации масштабирования backend
+    # volumes:
+    #   - "/var/run/docker.sock:/tmp/docker.sock:ro"
+    depends_on:
+      - backend
+    # Для сборки в ходе отладки
+    # build:
+    #   context: .
+    #   dockerfile: src/frontend/Dockerfile
 
 networks:
-  app-network:
+  sandbox:
 
+volumes:
+  postgres-data:
