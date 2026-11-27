@@ -21,5 +21,21 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.ports.backend }}
+          env:
+            - name: DB_ENABLED
+              value: {{ .Values.db.enabled | quote }}
+            - name: DB_HOST
+              value: {{ .Values.db.host | quote }}
+            - name: DB_PORT
+              value: {{ .Values.db.port | quote }}
+            - name: DB_USER
+              value: {{ .Values.db.user | quote }}
+            - name: DB_PASSWORD
+              value: {{ .Values.db.password | quote }}
+            - name: DB_NAME
+              value: {{ .Values.db.name | quote }}
+            - name: DB_SSLMODE
+              value: {{ .Values.db.sslmode | quote }}
+
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

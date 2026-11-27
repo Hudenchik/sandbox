@@ -11,3 +11,17 @@ ports:
 resources:
   requests: { cpu: 100m, memory: 128Mi }
   limits: { cpu: 500m, memory: 512Mi }
+
+db:
+  enabled: true
+  host: sandbox-postgres      
+  port: 5432
+  user: postgres
+  password: postgres         
+  name: postgres
+  sslmode: disable
+
+postgres:
+  image: postgres:15-alpine
+  storage: 1Gi
+
