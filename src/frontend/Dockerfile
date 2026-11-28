@@ -1,31 +1,69 @@
+# syntax=docker/dockerfile:1
 
-
-# --- Стадия сборки ---
-FROM node:16-bullseye AS builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS base
 WORKDIR /app
 
-# Установка зависимостей
+# 1. Зависимости (редко меняются, установка строго по хэшам из package-lock.json)
 COPY src/frontend/package.json src/frontend/package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
 
-# Копируем исходный код и собираем проект
+# 2. Исходный код (часто меняется)
 COPY src/frontend/ ./
-RUN npm run build          # Результат сборки: /app/dist
 
-# --- Финальная стадия (Runtime) ---
-FROM node:16-bullseye AS runtime
+# --- Стадия тестов и линтеров (CI) ---
+FROM base AS test
+ENV CI=true
+RUN npm run lint --if-present && npm test --if-present
+
+# --- Стадия сборки продакшен-бандла ---
+FROM base AS builder
+ENV NODE_OPTIONS=--openssl-legacy-provider
+RUN npm run build
+
+# --- Финальный образ (PROD) ---
+FROM nginx:1.27-alpine AS runtime
 WORKDIR /app
 
-# Устанавливаем http-server глобально для раздачи статики
-RUN npm install -g http-server
-
-# Копируем собранный продакшн-бандл из стадии builder
-COPY --from=builder --chown=node:node /app/dist /app/dist
-
-USER node
-
-# Порт, который слушает http-server по умолчанию
-EXPOSE 8888
+# Один слой: non-root пользователь (UID 10001) и права на директории Nginx
+RUN addgroup -g 10001 -S appgroup \
+    && adduser -u 10001 -S appuser -G appgroup \
+    && sed -i '/^user /d' /etc/nginx/nginx.conf \
+    && sed -i 's,/var/run/nginx.pid,/tmp/nginx.pid,g; s,/run/nginx.pid,/tmp/nginx.pid,g' /etc/nginx/nginx.conf \
+    && chown -R appuser:appgroup /var/cache/nginx /var/log/nginx /etc/nginx/conf.d
 
 # Запускаем http-server для папки dist
-CMD ["http-server", "dist", "-p", "8888", "--cors", "--proxy", "http://my-backend:8081"]
+COPY <<EOF /etc/nginx/conf.d/default.conf
+server {
+    listen 8888;
+    root /app/dist;
+    index index.html;
+
+    add_header Access-Control-Allow-Origin * always;
+    add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+    add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-Requested-With" always;
+
+    location / {
+        if (\$request_method = OPTIONS) {
+            return 204;
+        }
+        try_files \$uri \$uri/ @backend;
+    }
+
+    location @backend {
+        proxy_pass http://my-backend:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+
+COPY --from=builder --chown=appuser:appgroup /app/dist /app/dist
+
+USER 10001
+EXPOSE 8888
+
+
