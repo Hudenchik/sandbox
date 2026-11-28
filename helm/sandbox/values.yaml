@@ -25,3 +25,8 @@ postgres:
   image: postgres:15-alpine
   storage: 1Gi
 
+ingress:
+  enabled: true
+  className: nginx
+
+

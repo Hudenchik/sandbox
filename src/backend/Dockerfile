@@ -1,33 +1,52 @@
+# syntax=docker/dockerfile:1
 
-
-# --- Стадия сборки ---
-FROM --platform=linux/amd64 golang:1.17-bullseye AS builder
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS base
 WORKDIR /src
 
-# Копируем зависимости для кэширования слоев
-COPY src/backend/go.mod src/backend/go.sum ./
-RUN go mod download
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+ARG VERSION=dev
 
-# Копируем исходный код бэкенда
+ENV CGO_ENABLED=0 \
+    GOFLAGS="-mod=readonly"
+
+# 1. Зависимости (редко меняются)
+COPY src/backend/go.mod src/backend/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download && go mod verify
+
+# 2. Исходный код (часто меняется)
 COPY src/backend/ ./
 
-# Собираем бинарник под linux/amd64
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-w -s" -o /out/sandbox-backend ./cmd/api/
+# --- Стадия тестов (CI) ---
+FROM base AS test
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go test -race ./...
 
-# --- Финальная стадия (Runtime) ---
-# Используем тот же образ, что и для сборки (golang:1.17-bullseye)
-FROM --platform=linux/amd64 golang:1.17-bullseye AS runtime
+# --- Стадия сборки бинарника ---
+FROM base AS builder
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+    -o /out/sandbox-backend ./cmd/api/
+
+# --- Финальный образ (PROD) ---
+FROM alpine:3.21 AS runtime
 WORKDIR /app
 
-# Копируем скомпилированный бинарник из стадии builder
-COPY --from=builder /out/sandbox-backend /app/sandbox-backend
+# Один слой: сертификаты, non-root пользователь и папка для логов
+RUN apk add --no-cache ca-certificates \
+    && addgroup -g 10001 -S appgroup \
+    && adduser -u 10001 -S appuser -G appgroup \
+    && mkdir -p /app/logs \
+    && chown -R appuser:appgroup /app
 
-RUN useradd -u 1000 appuser && chown -R appuser:appuser /app
-USER appuser
+COPY --from=builder --chown=appuser:appgroup /out/sandbox-backend /app/sandbox-backend
 
-# Порт, на котором работает приложение (при необходимости измените)
+ENV LOG_FILE=/app/logs/backend.log
+USER 10001
 EXPOSE 8081
 
-# Команда для запуска приложения
 CMD ["/app/sandbox-backend"]

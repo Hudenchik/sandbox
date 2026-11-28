@@ -1,4 +1,4 @@
-name: sandbox-ci-cd
+name: sandbox-ci
 
 on:
   push:
